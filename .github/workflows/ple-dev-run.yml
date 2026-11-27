@@ -109,6 +109,13 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install the kit's harbor tool
+        # The kit refuses to run without this and prints the exact command:
+        #   "Harbor is not installed: uv tool install harbor==0.20.0 --with websockets"
+        run: |
+          uv tool install harbor==0.20.0 --with websockets
+          uv tool list
+
       - name: Cache the Hugging Face dataset
         uses: actions/cache@v4
         with:
