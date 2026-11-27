@@ -71,20 +71,50 @@ def resolve(path, workdir):
     return (workdir.rstrip("/") + "/" + path.lstrip("./")) if workdir else path
 
 
+# Phrases that mark a path as something the brief does NOT require on disk:
+# either explicitly optional, or a file the delivered program writes when it is
+# run. Measured against the kit's dev_set.yaml: data-hall-mep-routing names
+# output/solution.py as its only graded deliverable, while output/model.ifc is
+# what that script writes at runtime ("writes one IFC4 file to sys.argv[1]
+# (default output/model.ifc)") and output/reconciliation.json is introduced as
+# "optional side file ... Its absence is not a gate failure". Requiring either
+# makes the gate refuse `done` over a file no grader ever reads.
+_SOFT = re.compile(
+    r"optional|you may write|if modelled|if modeled|absence of the file|"
+    r"absence is not|not a gate failure|not required", re.I)
+# "... writes one IFC4 file to sys.argv[1] (default output/model.ifc)" - a
+# default value for an argument of the delivered program, not a deliverable.
+_DEFAULT_OF = re.compile(r"default[^\n]{0,20}$", re.I)
+
+
+def _soft_paths(text, paths):
+    """Paths the brief marks optional, or names only as a program's default output."""
+    soft = set()
+    for p in paths:
+        for m in re.finditer(re.escape(p), text):
+            before = text[max(0, m.start() - 240): m.start()]
+            if _DEFAULT_OF.search(before) or _SOFT.search(before + text[m.end(): m.end() + 160]):
+                soft.add(p)
+                break
+    return soft
+
+
 def deliverables(contract):
     """The authoritative list of files this task must produce.
 
     A zip target is the single deliverable: its named members are checked inside
-    the archive, never as separate paths on disk.
+    the archive, never as separate paths on disk. Paths the brief marks optional
+    or describes as runtime output are reported separately, never required.
     """
     target = contract.get("primary_target")
     if target and (contract.get("primary_format") or "").lower() == "zip":
         return [target]
     out = [target] if target else []
+    soft = set(contract.get("optional_files") or [])
     for p in (contract.get("required_files") or []):
         if any(same_file(p, q) for q in out):
             continue
-        if not is_output_path(p):
+        if not is_output_path(p) or p in soft:
             continue
         out.append(p)
     return out
@@ -191,6 +221,8 @@ def build(text):
         'first_version_by_step': (lambda m: int(m.group(1)) if m else None)(
             re.search(r'within your first\s*~?(\d+)\s*steps', text, re.I)),
     }
+    # The primary target is never demoted, however it is phrased.
+    c['optional_files'] = sorted(_soft_paths(text, required[:8]) - {target})
     c['deliverables'] = deliverables(c)
     return c
 
