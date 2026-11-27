@@ -98,6 +98,7 @@ class Client:
                                   "args": block.get("input") or {}})
             u = data.get("usage") or {}
             return {"text": text, "tool_calls": calls,
+                    "meta": {"finish_reason": data.get("stop_reason")},
                     "usage": {"in": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0),
                               "out": u.get("output_tokens", 0),
                               "cache_read": u.get("cache_read_input_tokens", 0)}}
@@ -107,6 +108,10 @@ class Client:
                       "messages": messages, "tools": _tools_openai(tools)})
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
+        meta = {"finish_reason": choice.get("finish_reason"),
+                "message_keys": sorted(msg.keys()),
+                "n_choices": len(data.get("choices") or []),
+                "top_keys": sorted(data.keys())}
         calls = []
         for tc in (msg.get("tool_calls") or []):
             fn = tc.get("function") or {}
@@ -116,7 +121,7 @@ class Client:
                 args = {"_raw": fn.get("arguments")}
             calls.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "args": args})
         u = data.get("usage") or {}
-        return {"text": msg.get("content") or "", "tool_calls": calls,
+        return {"text": msg.get("content") or "", "tool_calls": calls, "meta": meta,
                 "usage": {"in": u.get("prompt_tokens", 0), "out": u.get("completion_tokens", 0),
                           "cache_read": ((u.get("prompt_tokens_details") or {})
                                          .get("cached_tokens", 0))}}

@@ -161,11 +161,22 @@ jobs:
           echo "===== results.json ====="
           cat runs/*/results.json 2>/dev/null || echo "(none)"
           echo
-          echo "===== harbor.log, last 400 lines ====="
-          tail -n 400 runs/*/attempt*/harbor.log 2>/dev/null || echo "(none)"
+          echo "===== harness step trace ====="
+          cat /tmp/ple-harness.log 2>/dev/null || echo "(no /tmp/ple-harness.log)"
+          echo
+          echo "===== run tree ====="
+          find runs -maxdepth 9 -type f -printf '%10s  %p\n' 2>/dev/null | head -300
           echo
           echo "===== files the agent left behind ====="
-          find runs/*/artifacts -maxdepth 5 2>/dev/null | head -120 || echo "(none)"
+          find "$GITHUB_WORKSPACE/entry/artifacts" -maxdepth 6 -printf '%10s  %p\n' 2>/dev/null \
+            | head -200 || echo "(none)"
+          echo
+          echo "===== text files under the trial ====="
+          find runs -maxdepth 9 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.txt' \
+            -o -name '*.json' -o -name '*.md' \) -size -2M 2>/dev/null | head -40 \
+            | while read -r f; do
+                echo "----- $f -----"; head -c 8000 "$f"; echo; echo;
+              done
 
       - name: Disk after run
         if: always()

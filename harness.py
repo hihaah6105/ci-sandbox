@@ -41,6 +41,18 @@ MAX_STEPS = int(os.environ.get("PLE_MAX_STEPS", "160"))
 GATE_EVERY = int(os.environ.get("PLE_GATE_EVERY", "15"))
 MAX_IDLE = int(os.environ.get("PLE_MAX_IDLE", "3"))   # replies with no tool call
 
+# A plain-text trace of every step, written on the machine running the harness.
+# Nothing secret goes in it: endpoints and tool names, never keys or headers.
+DEBUG_LOG = os.environ.get("PLE_DEBUG_LOG", "/tmp/ple-harness.log")
+
+
+def _dbg(line):
+    try:
+        with open(DEBUG_LOG, "a", encoding="utf8") as fh:
+            fh.write(f"{time.strftime('%H:%M:%S')}  {line}\n")
+    except Exception:
+        pass
+
 SYSTEM = """You are a licensed professional engineer completing a billable deliverable.
 
 How this harness works, and what it expects of you:
@@ -126,11 +138,17 @@ async def solve(session) -> str:
         except Exception as e:
             st.add_note(f"could not write placeholder {path}: {e}")
     await session.log(f"placeholders created: {created}")
+    _dbg(f"=== {con.get('deliverables')} workdir={workdir}")
+    _dbg(f"placeholders created: {created}")
 
     # ---- stage 2: work ----------------------------------------------------
     try:
         client = model_mod.Client()
+        _dbg(f"client: flavour={getattr(client, 'flavour', '?')} "
+             f"model={getattr(client, 'model', '?')!r} url={getattr(client, 'url', '?')} "
+             f"tools={[t['name'] for t in model_mod.TOOLS]}")
     except model_mod.ModelError as e:
+        _dbg(f"no client: {e}")
         verdict, findings = await _gate(session, con, created, final=True)
         return (f"Could not reach a model endpoint ({e}). Placeholder deliverables "
                 f"are in place so the task is gradable.\n\n{gate_mod.report(verdict, findings)}")
@@ -146,10 +164,17 @@ async def solve(session) -> str:
             break
         steps += 1
         try:
-            reply = await asyncio.to_thread(client.chat, conv.messages(), model_mod.TOOLS)
+            msgs = conv.messages()
+            _dbg(f"step {steps}: sending {len(msgs)} messages, "
+                 f"~{state_mod.est_tokens(json.dumps(msgs))} est tokens")
+            reply = await asyncio.to_thread(client.chat, msgs, model_mod.TOOLS)
         except model_mod.ModelError as e:
             st.add_note(f"model error, stopping: {e}")
+            _dbg(f"step {steps}: MODEL ERROR, stopping -> {e}")
             break
+        _dbg(f"step {steps}: meta={reply.get('meta')} usage={reply['usage']} "
+             f"calls={[c['name'] for c in reply['tool_calls']]} "
+             f"text={reply['text'][:400]!r}")
         u = reply["usage"]
         try:
             await session.usage(client.model, input_tokens=u["in"], output_tokens=u["out"],
@@ -164,6 +189,7 @@ async def solve(session) -> str:
             idle += 1
             if idle >= MAX_IDLE:
                 st.add_note(f"model produced no tool call {idle} times in a row; stopping")
+                _dbg(f"step {steps}: {idle} idle replies in a row, stopping")
                 break
             conv.add("user", "Keep going, or call done once the gate passes.")
             continue
@@ -202,6 +228,7 @@ async def solve(session) -> str:
                     out = "accepted"
             else:
                 out = f"unknown tool {name}"
+            _dbg(f"step {steps}: tool {name}({json.dumps(args)[:200]}) -> {str(out)[:300]!r}")
             conv.add("user", f"[{name}] {state_mod.clip(out)}")
         if finished:
             break
@@ -216,6 +243,8 @@ async def solve(session) -> str:
     stats = conv.stats()
     stats.update(steps=steps, seconds=int(time.monotonic() - t0))
     await session.log("state stats: " + json.dumps(stats))
+    _dbg(f"final gate: {verdict}\n{gate_mod.report(verdict, findings)}")
+    _dbg("stats: " + json.dumps(stats))
 
     lines = [last_text.strip() or "Work completed.", "", gate_mod.report(verdict, findings)]
     if verdict == gate_mod.FAIL:

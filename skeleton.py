@@ -216,9 +216,13 @@ def build(contract):
             continue
         out[extra] = file_for(posixpath.basename(extra), {})
 
-    if not out:
-        d = (contract.get("output_dir") or "output/").rstrip("/")
-        out[f"{d}/PLACEHOLDER.md"] = file_for("PLACEHOLDER.md")
+    # Two of the 29 dev briefs (landscape-sheet-revision, fire-test-validation-memo)
+    # name no file at all: they say "save your answer under output/", and output/ is
+    # what the judge reads. Writing a PLACEHOLDER.md there puts a file stamped
+    # NOT-YET-COMPLETED straight into the graded answer, and the gate - which
+    # refuses `done` while that marker exists anywhere - then deadlocks the run
+    # against a file the harness itself planted. Where there is no file contract
+    # there is nothing to pre-create, so write nothing.
     return out
 
 
