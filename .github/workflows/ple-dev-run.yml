@@ -139,9 +139,33 @@ jobs:
           PLE_MAX_STEPS: ${{ inputs.max_steps }}
         run: |
           set -o pipefail
+          rc=0
           uv run python eval/run.py "$GITHUB_WORKSPACE/entry" \
             --tasks "${{ matrix.task }}" \
-            2>&1 | tee "$RUNNER_TEMP/run.log"
+            2>&1 | tee "$RUNNER_TEMP/run.log" || rc=$?
+          echo "eval/run.py exit code: $rc"
+          # The kit ends with a commit-readiness check that fails here because
+          # this dev repo gitignores artifacts/ and we only ran one task. That
+          # is a packaging complaint, not a task failure, so judge the job on
+          # whether a results.json was actually produced.
+          if ! ls runs/*/results.json >/dev/null 2>&1; then
+            echo "::error::no results.json - the task did not run"
+            exit 1
+          fi
+
+      # Everything needed to debug a zero without downloading the artifact zip.
+      - name: What the agent did
+        if: always()
+        working-directory: kit
+        run: |
+          echo "===== results.json ====="
+          cat runs/*/results.json 2>/dev/null || echo "(none)"
+          echo
+          echo "===== harbor.log, last 400 lines ====="
+          tail -n 400 runs/*/attempt*/harbor.log 2>/dev/null || echo "(none)"
+          echo
+          echo "===== files the agent left behind ====="
+          find runs/*/artifacts -maxdepth 5 2>/dev/null | head -120 || echo "(none)"
 
       - name: Disk after run
         if: always()
