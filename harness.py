@@ -41,6 +41,9 @@ MAX_STEPS = int(os.environ.get("PLE_MAX_STEPS", "160"))
 GATE_EVERY = int(os.environ.get("PLE_GATE_EVERY", "15"))
 MAX_IDLE = int(os.environ.get("PLE_MAX_IDLE", "3"))   # replies with no tool call
 
+# Formats that are archives underneath: plain text written to one destroys it.
+BINARY_EXT = (".docx", ".doc", ".xlsx", ".xls", ".pptx", ".pdf", ".zip", ".dwg")
+
 # A plain-text trace of every step, written on the machine running the harness.
 # Nothing secret goes in it: endpoints and tool names, never keys or headers.
 DEBUG_LOG = os.environ.get("PLE_DEBUG_LOG", "/tmp/ple-harness.log")
@@ -70,6 +73,17 @@ How this harness works, and what it expects of you:
 - Compute with code rather than in your head. Where feasibility is monotone in a
   catalogue (a larger conductor always lowers voltage drop) search the catalogue
   instead of reasoning about it.
+- Read every format with a tool, not by guessing: `pdftotext -layout` for PDFs,
+  python-docx for .docx, openpyxl for .xlsx. What this container actually has is
+  listed under "Container" in your working state; check there before assuming.
+- A .docx, .xlsx, .pdf or .zip deliverable must be BUILT by a script (python-docx,
+  openpyxl, zipfile), never written as plain text. `write_file` refuses those
+  formats for that reason. A valid empty file of the right type is already at the
+  deliverable path; overwrite it with the real document.
+- If your state lists MCP app servers, the project's live systems (issue tracker,
+  wiki, mail, file store) are reachable over HTTP from bash at those URLs. Part of
+  the evidence you need - and sometimes part of the deliverable itself, such as
+  raising a tracker item - lives in them, not in the files.
 - Where a change to your design alters the demand on other parts - diaphragm
   stiffness redistributing load, a pipe network, a routed service - re-check
   every constraint after every change, and converge before you compare cost.
@@ -91,6 +105,36 @@ async def _read(session, path):
         return await session.read_file(path)
     except Exception:
         return None
+
+
+PROBE = (
+    "for c in pdftotext pdftoppm soffice unzip qpdf; do "
+    "command -v $c >/dev/null 2>&1 && echo have:$c; done; "
+    "python3 -c \"import importlib.util as u; "
+    "print(chr(10).join('have:py:'+m for m in "
+    "['docx','openpyxl','pypdf','fitz','PIL','pandas','ezdxf','ifcopenshell'] "
+    "if u.find_spec(m)))\" 2>/dev/null"
+)
+
+
+async def _capabilities(session, st):
+    """Record the container's readers/writers and the task's app servers."""
+    for s in (getattr(session, "mcp_servers", None) or []):
+        if not isinstance(s, dict):
+            continue
+        url = str(s.get("url") or "").strip()
+        if url:
+            name = str(s.get("name") or s.get("id") or "app")
+            st.add_fact(f"app server {name}", url, "", "task mcp_servers")
+    try:
+        r = await session.exec(PROBE, timeout_sec=120)
+        found = sorted({ln.strip()[5:] for ln in (r.get("output") or "").splitlines()
+                        if ln.strip().startswith("have:")})
+    except Exception as e:
+        st.add_note(f"capability probe failed: {e}")
+        return
+    st.add_fact("container tools", ", ".join(found) or "none detected", "", "probe at step 0")
+    _dbg(f"capabilities: {found}")
 
 
 async def _listing(session, con, workdir):
@@ -131,6 +175,12 @@ async def solve(session) -> str:
 
     st = state_mod.State(con)
     conv = state_mod.Conversation(SYSTEM, st)
+
+    # ---- stage 0b: what this environment actually offers ------------------
+    # The 1.0 baseline run on backfeed-energization-reply spent its first six
+    # steps discovering pdftotext/python-docx/soffice and port-scanning for the
+    # task's app servers. Both are knowable up front, so spend one call instead.
+    await _capabilities(session, st)
 
     # ---- stage 1: placeholders now, never overwriting anything -----------
     created = []
@@ -220,11 +270,18 @@ async def solve(session) -> str:
                 st.note_file(p, "read")
             elif name == "write_file":
                 p = contract_mod.resolve(str(args.get("path", "")), workdir)
-                try:
-                    n = await session.write_file(p, str(args.get("content", "")))
-                    out = f"wrote {n} bytes to {p}"
-                except Exception as e:
-                    out = f"write failed: {e}"
+                if p.lower().endswith(BINARY_EXT):
+                    out = (f"REFUSED: {p} is a binary document format. Writing text to it "
+                           "would corrupt it and the conformance gate would fail to open "
+                           "it. Build it with a script instead - python-docx for .docx, "
+                           "openpyxl for .xlsx, zipfile for .zip - and run that with bash.")
+                    st.add_note(f"refused a text write to {p}")
+                else:
+                    try:
+                        n = await session.write_file(p, str(args.get("content", "")))
+                        out = f"wrote {n} bytes to {p}"
+                    except Exception as e:
+                        out = f"write failed: {e}"
             elif name == "record":
                 out = _record(st, args)
             elif name == "done":
