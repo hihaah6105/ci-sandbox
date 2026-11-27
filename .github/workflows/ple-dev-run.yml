@@ -30,6 +30,10 @@ on:
         description: 'Branch or tag of google-research/ple to use'
         required: true
         default: 'main'
+      max_steps:
+        description: 'Hard cap on agent steps = model requests. OpenRouter free allows 20/min and 50/day (1,000 after a one-off $10). Use 12 for a plumbing test; 160 for a real run.'
+        required: true
+        default: '12'
       agent_minutes:
         description: 'Agent time cap per task, minutes. Keep below 300 - the job itself dies at 360. 60 is plenty for a plumbing test; raise it for real runs.'
         required: true
@@ -132,6 +136,7 @@ jobs:
           # OPENROUTER_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY.
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
           PLE_AGENT_TIMEOUT_MINUTES: ${{ inputs.agent_minutes }}
+          PLE_MAX_STEPS: ${{ inputs.max_steps }}
         run: |
           set -o pipefail
           uv run python eval/run.py "$GITHUB_WORKSPACE/entry" \
