@@ -93,7 +93,17 @@ async def _read(session, path):
         return None
 
 
-async def _gate(session, con, created, final):
+async def _listing(session, con, workdir):
+    """What is actually sitting in the output directory right now."""
+    d = contract_mod.resolve((con.get("output_dir") or "output/").rstrip("/"), workdir)
+    try:
+        r = await session.exec(f'ls -A {json.dumps(d)} 2>/dev/null', timeout_sec=30)
+    except Exception:
+        return []
+    return [ln.strip() for ln in (r.get("output") or "").splitlines() if ln.strip()]
+
+
+async def _gate(session, con, created, final, workdir="/"):
     """Run the conformance gate. Reads happen inline, not through a thread."""
     blobs = {}
     paths = list(con.get("deliverables") or []) + [p for p in created if p not in (con.get("deliverables") or [])]
@@ -105,7 +115,8 @@ async def _gate(session, con, created, final):
             return blobs[path]
         return next((v for k, v in blobs.items() if gate_mod._same_tail(k, path)), None)
 
-    return gate_mod.check(con, read, final=final, extra_paths=created)
+    listing = await _listing(session, con, workdir) if not (con.get("deliverables") or []) else None
+    return gate_mod.check(con, read, final=final, extra_paths=created, output_files=listing)
 
 
 async def solve(session) -> str:
@@ -149,7 +160,7 @@ async def solve(session) -> str:
              f"tools={[t['name'] for t in model_mod.TOOLS]}")
     except model_mod.ModelError as e:
         _dbg(f"no client: {e}")
-        verdict, findings = await _gate(session, con, created, final=True)
+        verdict, findings = await _gate(session, con, created, final=True, workdir=workdir)
         return (f"Could not reach a model endpoint ({e}). Placeholder deliverables "
                 f"are in place so the task is gradable.\n\n{gate_mod.report(verdict, findings)}")
 
@@ -217,7 +228,7 @@ async def solve(session) -> str:
             elif name == "record":
                 out = _record(st, args)
             elif name == "done":
-                verdict, findings = await _gate(session, con, created, final=True)
+                verdict, findings = await _gate(session, con, created, final=True, workdir=workdir)
                 if verdict == gate_mod.FAIL:
                     out = ("REFUSED: the conformance gate fails, so the work is not done.\n"
                            + gate_mod.report(verdict, findings))
@@ -234,12 +245,12 @@ async def solve(session) -> str:
             break
 
         if steps % GATE_EVERY == 0:
-            verdict, findings = await _gate(session, con, created, final=False)
+            verdict, findings = await _gate(session, con, created, final=False, workdir=workdir)
             st.add_check(f"interim gate at step {steps}", verdict)
             conv.add("user", gate_mod.report(verdict, findings))
 
     # ---- stage 3/4: final gate and an honest final message ---------------
-    verdict, findings = await _gate(session, con, created, final=True)
+    verdict, findings = await _gate(session, con, created, final=True, workdir=workdir)
     stats = conv.stats()
     stats.update(steps=steps, seconds=int(time.monotonic() - t0))
     await session.log("state stats: " + json.dumps(stats))

@@ -114,7 +114,7 @@ def _same_tail(a, b):
     return x == y or x.endswith("/" + y) or y.endswith("/" + x)
 
 
-def check(contract, reader, final=True, extra_paths=None):
+def check(contract, reader, final=True, extra_paths=None, output_files=None):
     """Check the contract against what is actually on disk.
 
     Args:
@@ -134,9 +134,22 @@ def check(contract, reader, final=True, extra_paths=None):
             targets.append(p)
 
     if not targets:
+        # Briefs that name no file say "save your answer under output/", and
+        # output/ is what the judge reads. There is no schema to check, but
+        # there is still one thing that must be true: the directory cannot be
+        # empty. Without this the gate reports "nothing to verify" and the
+        # agent treats that as permission to call done having written nothing.
         d = contract.get("output_dir") or "output/"
-        findings.append((WARN, d,
-                         "the brief names no file, so any file under this directory is the answer"))
+        listed = sorted(output_files) if output_files else []
+        if output_files is None:
+            findings.append((WARN, d,
+                             "the brief names no file, so any file under this directory is the answer"))
+        elif not listed:
+            findings.append((FAIL, d,
+                             "the brief names no file, so this directory is the answer - and it is "
+                             "empty. Write the deliverable the brief asks for into it before finishing."))
+        else:
+            findings.append((OK, d, "answer files present: " + ", ".join(listed[:12])))
 
     for path in targets:
         blob = reader(path)

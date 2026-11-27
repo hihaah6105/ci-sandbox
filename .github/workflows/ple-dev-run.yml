@@ -67,7 +67,11 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false          # one bad task must not cancel the others
-      max-parallel: 2           # small runner + metered minutes + free-tier rate limits
+      # One at a time. Google AI Studio's 250K tokens-per-minute cap is per
+      # Cloud *project*, not per key or per job, and a single task measured
+      # 178K input tokens in 77 s (~139K TPM). Two jobs would sit over the cap
+      # and spend the run retrying 429s.
+      max-parallel: 1
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Free disk space
@@ -161,22 +165,36 @@ jobs:
           echo "===== results.json ====="
           cat runs/*/results.json 2>/dev/null || echo "(none)"
           echo
-          echo "===== harness step trace ====="
-          cat /tmp/ple-harness.log 2>/dev/null || echo "(no /tmp/ple-harness.log)"
+          echo "===== what the agent left in the graded answer ====="
+          find "$GITHUB_WORKSPACE/entry/artifacts" -maxdepth 6 -type f \
+            -printf '%10s  %p\n' 2>/dev/null | head -60 || echo "(none)"
           echo
-          echo "===== run tree ====="
-          find runs -maxdepth 9 -type f -printf '%10s  %p\n' 2>/dev/null | head -300
+          echo "===== final message ====="
+          cat "$GITHUB_WORKSPACE"/entry/artifacts/*/final_message.md 2>/dev/null || echo "(none)"
           echo
-          echo "===== files the agent left behind ====="
-          find "$GITHUB_WORKSPACE/entry/artifacts" -maxdepth 6 -printf '%10s  %p\n' 2>/dev/null \
-            | head -200 || echo "(none)"
-          echo
-          echo "===== text files under the trial ====="
-          find runs -maxdepth 9 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.txt' \
-            -o -name '*.json' -o -name '*.md' \) -size -2M 2>/dev/null | head -40 \
-            | while read -r f; do
-                echo "----- $f -----"; head -c 8000 "$f"; echo; echo;
-              done
+          # The evaluator already records every tool call in trajectory.json.
+          # Summarise it rather than dumping 220 KB of JSON into the log.
+          echo "===== step-by-step trace ====="
+          python3 - <<'TRACE'
+          import glob, json
+          for path in sorted(glob.glob('runs/*/artifacts/*/trajectory.json')):
+              print(f"--- {path}")
+              try:
+                  steps = json.load(open(path)).get('steps') or []
+              except Exception as exc:
+                  print(f"    unreadable: {exc}"); continue
+              for st in steps:
+                  who = st.get('source')
+                  calls = st.get('tool_calls') or []
+                  msg = (st.get('message') or '').replace('\n', ' ')[:160]
+                  if calls:
+                      for c in calls:
+                          arg = json.dumps(c.get('arguments') or {})[:160]
+                          print(f"  {str(st.get('step_id', '?')):>3} {str(who):<5} {c.get('function_name')} {arg}")
+                  else:
+                      print(f"  {str(st.get('step_id', '?')):>3} {str(who):<5} (no tool call) {msg}")
+              print(f"    {len(steps)} steps")
+          TRACE
 
       - name: Disk after run
         if: always()
