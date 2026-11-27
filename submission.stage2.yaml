@@ -1,0 +1,13 @@
+# Stage 2 entry. model_api must be one of the eight sponsored models:
+#   google-cloud/gemini-4-argon        google-cloud/gemini-3.8-flash
+#   google-cloud/gemini-3.1-pro-preview  google-cloud/claude-opus-5-5
+#   google-cloud/gpt-oss-120b          google-cloud/glm-5.2
+#   google-cloud/gemma-4-26b           google-cloud/llama-4-maverick
+#
+# For free local dev runs, copy submission.dev.yaml over this file instead.
+name: contract-first
+model_api: google-cloud/claude-opus-5-5
+install: >-
+  uv venv --python 3.12 /opt/harness/venv
+  && uv pip install --python /opt/harness/venv/bin/python -r {src}/requirements.txt
+serve: /opt/harness/venv/bin/python {src}/serve.py
