@@ -1,0 +1,177 @@
+# PLE dev-set runner on GitHub Actions.
+#
+# Why this exists: a public-repo runner gives 4 vCPU / 16 GB RAM free with no
+# minute cap, which is more than the laptop, and every task gets its own fresh
+# machine so tasks run in parallel instead of one at a time.
+#
+# Run it from the Actions tab -> "PLE dev run" -> "Run workflow".
+#
+# Secrets this needs (Settings -> Secrets and variables -> Actions -> New
+# repository secret). Add them yourself in the browser; never paste a key into
+# a file, a chat, or a commit:
+#   HF_TOKEN        - Hugging Face read token (the PLE dataset is gated)
+#   MODEL_API_KEY   - key for whichever dev model you are using
+#
+name: PLE dev run
+
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: 'Comma-separated task ids, or "all" for the full dev set'
+        required: true
+        default: 'landscape-sheet-revision'
+      kit_ref:
+        description: 'Branch or tag of google-research/ple to use'
+        required: true
+        default: 'main'
+      agent_minutes:
+        description: 'Agent time cap per task. Keep below 300 - the job itself dies at 360.'
+        required: true
+        default: '240'
+
+permissions:
+  contents: read
+
+jobs:
+  # Turn the comma-separated input into a matrix, one job per task.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - id: build
+        run: |
+          IN='${{ inputs.tasks }}'
+          if [ "$IN" = "all" ]; then
+            IN='backfeed-energization-reply,cooling-water-flush-plan,data-center-site-model,data-hall-device-takeoff,data-hall-mep-routing,data-hall-mep-routing-offset,division-26-specifications,emergency-spillway-check,engineers-estimate-check,eor-review-corrections,fill-compaction-acceptance,fire-solve-convergence,fire-test-validation-memo,footing-settlement-verification,foundation-strategy,frame-extension-method,heat-rejection-life-cycle-cost,landscape-sheet-revision,les-mesh-resolution,lv-cable-sizing,mv-conveyance-study,permission-to-operate-memo,pre-application-capacity-response,roof-deck-design,seismic-diaphragm-shear,shoring-design-verification,solar-supplemental-review,solar-witness-test-package,wind-diaphragm-shear'
+          fi
+          JSON=$(printf '%s' "$IN" | tr -d ' ' | python3 -c 'import sys,json; print(json.dumps([t for t in sys.stdin.read().split(",") if t]))')
+          echo "matrix={\"task\":$JSON}" >> "$GITHUB_OUTPUT"
+          echo "Will run: $JSON"
+
+  run-task:
+    needs: plan
+    runs-on: ubuntu-latest
+    # The hard platform ceiling is 360 minutes. Stay under it so the job can
+    # still upload its artifacts instead of being killed mid-write.
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false          # one bad task must not cancel the others
+      max-parallel: 4           # be polite to free-tier model rate limits
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false   # we need Docker working
+          swap-storage: false
+
+      - name: Show available resources
+        run: |
+          echo "--- cpu/mem ---"; nproc; free -g
+          echo "--- disk ---";    df -h /
+
+      - name: Check out this entry
+        uses: actions/checkout@v4
+        with:
+          path: entry
+
+      - name: Check out the PLE competition kit
+        uses: actions/checkout@v4
+        with:
+          repository: google-research/ple
+          ref: ${{ inputs.kit_ref }}
+          path: kit
+
+      - name: Bring in the evaluator's taskbridge
+        run: |
+          set -e
+          SRC=$(find kit -name taskbridge.py -print -quit)
+          if [ -z "$SRC" ]; then
+            echo "::error::taskbridge.py not found in the kit checkout"; exit 1
+          fi
+          cp "$SRC" entry/taskbridge.py
+          echo "copied $SRC -> entry/taskbridge.py"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Cache the Hugging Face dataset
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-ple-${{ matrix.task }}
+          restore-keys: |
+            hf-ple-
+
+      - name: Run the task
+        working-directory: kit
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Rename this to whatever your submission.yaml expects, e.g.
+          # OPENROUTER_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY.
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          PLE_AGENT_TIMEOUT_MINUTES: ${{ inputs.agent_minutes }}
+        run: |
+          set -o pipefail
+          uv run python eval/run.py "$GITHUB_WORKSPACE/entry" \
+            --tasks "${{ matrix.task }}" \
+            2>&1 | tee "$RUNNER_TEMP/run.log"
+
+      - name: Disk after run
+        if: always()
+        run: df -h /
+
+      - name: Upload artifacts and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ple-${{ matrix.task }}
+          path: |
+            entry/artifacts/**
+            kit/runs/**
+            ${{ runner.temp }}/run.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Collect every task's reward into one summary you can read at a glance.
+  summarise:
+    needs: run-task
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+      - name: Build summary
+        run: |
+          echo "## PLE dev run" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| task | reward |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, glob, os
+          rows = []
+          for m in glob.glob('all/**/manifest.json', recursive=True):
+              try:
+                  for tid, rec in json.load(open(m))['tasks'].items():
+                      rows.append((tid, rec.get('reward')))
+              except Exception:
+                  pass
+          for tid, r in sorted(set(rows)):
+              print(f"| {tid} | {r} |")
+          if rows:
+              vals = [r for _, r in rows if isinstance(r, (int, float))]
+              if vals:
+                  print(f"| **mean of {len(vals)}** | **{sum(vals)/len(vals):.4f}** |")
+          else:
+              print("| no manifest found | check the run log |")
+          PY

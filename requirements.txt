@@ -1,0 +1,5 @@
+# The evaluator's bridge needs this.
+websockets==15.0.1
+# Optional: lets the gate check spreadsheet column headers, not just sheet names.
+# Everything else in this harness is standard library only.
+openpyxl==3.1.5

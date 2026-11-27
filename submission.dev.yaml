@@ -1,0 +1,10 @@
+# Local development only. kit check will never call this submittable, by design:
+# the competition accepts only google-cloud/<id> models.
+# Set MODEL_API_KEY in the environment (or in GitHub Actions secrets).
+name: contract-first-dev
+model_api: openai-compatible/deepseek/deepseek-chat-v3.1:free
+model_base_url: https://openrouter.ai/api/v1
+install: >-
+  uv venv --python 3.12 /opt/harness/venv
+  && uv pip install --python /opt/harness/venv/bin/python -r {src}/requirements.txt
+serve: /opt/harness/venv/bin/python {src}/serve.py
