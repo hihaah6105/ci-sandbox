@@ -12,27 +12,18 @@ of one after another, overnight, without your laptop on.
 
 ## Step 1 — visibility is already decided
 
-This repo is **private**, which means it is genuinely not findable. The trade-off
-is the runner: a private repo gets **2 vCPU and 8 GB RAM** and draws on 2,000
-free Actions minutes a month, where a public one gets 4 vCPU, 16 GB and
-unlimited minutes. Either way the SSD is 14 GB, which is why the workflow's
-first step frees up disk.
+This repo is **public**. That is deliberate: the competition requires an
+open-source harness linked from the Kaggle Writeup, so it has to be public
+eventually, and a public repo gets the bigger runner — **4 vCPU and 16 GB
+RAM, with unlimited Actions minutes**, against 2 vCPU / 8 GB and 2,000
+minutes a month on a private one. Heavy tasks need it: the
+`backfeed-energization-reply` environment alone pulls 3,181 files and builds
+a multi-application image.
 
-Note what privacy does and does not buy. An obscure name on a *public* repo
-protects nothing, because GitHub indexes public repository contents for code
-search — anyone searching for `submission.yaml` or a sponsored model id would
-find it. Private actually hides it.
-
-Two consequences to watch:
-
-- **8 GB may be too little for the heavier tasks.** The kit sizes a task slot at
-  roughly 16 GB. Light tasks should be fine; if a heavy one is killed for memory,
-  that is the reason, and switching this repo to public is the fix.
-- **Minutes are metered.** A job can run up to 330 minutes, so a careless full
-  29-task run can exhaust the monthly allowance in one go. Start with one task
-  and a small `agent_minutes`.
-
-Visibility is reversible at any time in Settings → General.
+Being public costs nothing in secrecy that was ever really available. GitHub
+code search indexes file contents, so an obscure repository name hides
+nothing. What stays private is what belongs in Actions secrets, never in a
+file: see step 3.
 
 ## Step 2 — add the workflow file
 
