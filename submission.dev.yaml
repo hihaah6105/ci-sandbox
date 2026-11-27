@@ -1,8 +1,14 @@
-# Local development only. kit check will never call this submittable, by design:
+# Local development only.
+#
+# Free-roster note: OpenRouter's :free list churns. deepseek-chat-v3.1:free was
+# retired mid-run and returned HTTP 404 "This model is unavailable for free",
+# which failed the grader, not the harness. If this slug dies the same way,
+# check the current list before picking another - and remember that failed
+# attempts still count against the 50/day free quota. kit check will never call this submittable, by design:
 # the competition accepts only google-cloud/<id> models.
 # Set MODEL_API_KEY in the environment (or in GitHub Actions secrets).
 name: contract-first-dev
-model_api: openai-compatible/deepseek/deepseek-chat-v3.1:free
+model_api: openai-compatible/nvidia/nemotron-3.5-super-vl:free
 model_base_url: https://openrouter.ai/api/v1
 install: >-
   uv venv --python 3.12 /opt/harness/venv
