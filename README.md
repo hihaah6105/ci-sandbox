@@ -74,8 +74,9 @@ python3 run_local.py path/to/brief.txt /filesystem/<task-workdir>
 `kit check` will not call the dev config submittable — that is correct, the
 competition accepts only `google-cloud/<id>` models.
 
-**On GitHub Actions** (4 vCPU / 16 GB free on a public repo, one runner per
-task): see `SETUP-GITHUB-ACTIONS.md`.
+**On GitHub Actions**, one runner per task: see `SETUP-GITHUB-ACTIONS.md`.
+A private repo gets 2 vCPU / 8 GB and 2,000 free minutes a month; a public one
+gets 4 vCPU / 16 GB and unlimited minutes.
 
 ## The experiment switch
 

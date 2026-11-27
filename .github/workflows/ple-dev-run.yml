@@ -1,8 +1,13 @@
 # PLE dev-set runner on GitHub Actions.
 #
-# Why this exists: a public-repo runner gives 4 vCPU / 16 GB RAM free with no
-# minute cap, which is more than the laptop, and every task gets its own fresh
-# machine so tasks run in parallel instead of one at a time.
+# Why this exists: every task gets its own fresh runner, so tasks run in
+# parallel instead of one at a time, and nothing depends on the laptop.
+#
+# Runner size depends on repository visibility:
+#   private -> 2 vCPU,  8 GB RAM, 14 GB disk, 2,000 free minutes a month
+#   public  -> 4 vCPU, 16 GB RAM, 14 GB disk, unlimited free minutes
+# This repo is private, so minutes are metered: keep agent_minutes small for
+# plumbing tests and raise it only for real runs.
 #
 # Run it from the Actions tab -> "PLE dev run" -> "Run workflow".
 #
@@ -26,9 +31,9 @@ on:
         required: true
         default: 'main'
       agent_minutes:
-        description: 'Agent time cap per task. Keep below 300 - the job itself dies at 360.'
+        description: 'Agent time cap per task, minutes. Keep below 300 - the job itself dies at 360. 60 is plenty for a plumbing test; raise it for real runs.'
         required: true
-        default: '240'
+        default: '60'
 
 permissions:
   contents: read
@@ -58,7 +63,7 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false          # one bad task must not cancel the others
-      max-parallel: 4           # be polite to free-tier model rate limits
+      max-parallel: 2           # small runner + metered minutes + free-tier rate limits
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Free disk space

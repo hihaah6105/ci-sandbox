@@ -10,20 +10,29 @@ Your laptop has 16 GB of RAM and one of it. A GitHub Actions runner on a
 every task gets its own fresh machine — so tasks run several at a time instead
 of one after another, overnight, without your laptop on.
 
-## Step 1 — make the dev repo public
+## Step 1 — visibility is already decided
 
-Settings → General → scroll to the bottom → Change repository visibility → Public.
+This repo is **private**, which means it is genuinely not findable. The trade-off
+is the runner: a private repo gets **2 vCPU and 8 GB RAM** and draws on 2,000
+free Actions minutes a month, where a public one gets 4 vCPU, 16 GB and
+unlimited minutes. Either way the SSD is 14 GB, which is why the workflow's
+first step frees up disk.
 
-This matters: a private repo gets **half the machine** (2 vCPU, 8 GB) and burns
-a monthly minute allowance. Public gets 4 vCPU, 16 GB, unlimited.
+Note what privacy does and does not buy. An obscure name on a *public* repo
+protects nothing, because GitHub indexes public repository contents for code
+search — anyone searching for `submission.yaml` or a sponsored model id would
+find it. Private actually hides it.
 
-Two things to know. Workflow logs on a public repo are visible to anyone, which
-is fine here because the dev tasks are already published open-source — but never
-run anything touching hidden test tasks in CI. And your submission repo has to
-be public by competition close anyway.
+Two consequences to watch:
 
-If you'd rather keep this separate from your submission repo, make a second repo
-just for dev runs. That's cleaner, and I'd recommend it.
+- **8 GB may be too little for the heavier tasks.** The kit sizes a task slot at
+  roughly 16 GB. Light tasks should be fine; if a heavy one is killed for memory,
+  that is the reason, and switching this repo to public is the fix.
+- **Minutes are metered.** A job can run up to 330 minutes, so a careless full
+  29-task run can exhaust the monthly allowance in one go. Start with one task
+  and a small `agent_minutes`.
+
+Visibility is reversible at any time in Settings → General.
 
 ## Step 2 — add the workflow file
 
