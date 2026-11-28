@@ -30,6 +30,16 @@ on:
         description: 'Branch or tag of google-research/ple to use'
         required: true
         default: 'main'
+      config:
+        description: >-
+          Which submission config to run. submission.yaml is the free Google AI
+          Studio model. submission.haiku.yaml SPENDS ANTHROPIC CREDITS.
+        required: true
+        default: submission.yaml
+        type: choice
+        options:
+          - submission.yaml
+          - submission.haiku.yaml
       max_steps:
         description: 'Hard cap on agent steps = model requests. OpenRouter free allows 20/min and 50/day (1,000 after a one-off $10). Use 12 for a plumbing test; 160 for a real run.'
         required: true
@@ -132,6 +142,15 @@ jobs:
           restore-keys: |
             hf-ple-
 
+      - name: Choose the model config
+        run: |
+          cd "$GITHUB_WORKSPACE/entry"
+          if [ "${{ inputs.config }}" != "submission.yaml" ]; then
+            cp "${{ inputs.config }}" submission.yaml
+          fi
+          echo "--- active submission.yaml ---"
+          grep -E '^(name|model_api|model_base_url):' submission.yaml
+
       - name: Run the task
         working-directory: kit
         env:
@@ -139,6 +158,13 @@ jobs:
           # Rename this to whatever your submission.yaml expects, e.g.
           # OPENROUTER_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY.
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Judge the same way on every run, free, so a paid run and a free run
+          # stay comparable and credits are spent only on the agent. The kit
+          # would otherwise default the judge to the submission's own model.
+          JUDGE_BASE_URL: https://generativelanguage.googleapis.com/v1beta/openai
+          JUDGE_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          JUDGE_MODEL: gemini-3.5-flash-lite
           PLE_AGENT_TIMEOUT_MINUTES: ${{ inputs.agent_minutes }}
           PLE_MAX_STEPS: ${{ inputs.max_steps }}
         run: |

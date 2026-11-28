@@ -1,0 +1,30 @@
+# Paid development runs against Claude Haiku 5.5, through Anthropic's
+# OpenAI-compatible layer. Local dev only: the competition accepts only
+# google-cloud/<id> models, so `kit check` will refuse to call this
+# submittable, by design.
+#
+# Endpoint and auth per Anthropic's OpenAI SDK compatibility docs: base URL
+# https://api.anthropic.com/v1/, bearer `authorization` header, tool calling
+# supported (the `strict` field is ignored, which this harness does not send).
+#
+# Cost, from Anthropic's published rates (October 2026), USD per million tokens:
+#
+#   prompt <= 100K tokens    input $0.10   output $0.50   cache read $0.01
+#   prompt >  100K tokens    input $0.50   output $2.50   cache read $0.05
+#
+# Every token in a request is billed at the higher rate once the prompt passes
+# 100K, and cache reads count toward that threshold. Our bounded state holds the
+# peak prompt near 12K (measured: 5,208 on backfeed-energization-reply, 12,045
+# on landscape-sheet-revision), so runs stay in the cheap band with a wide
+# margin. That is a real, chargeable benefit of not resending the transcript.
+#
+# Set ANTHROPIC_API_KEY as a GitHub Actions secret. Keep JUDGE_BASE_URL pointed
+# at the free AI Studio endpoint so judging costs nothing and stays identical to
+# the free runs, which is what makes the comparison controlled.
+name: contract-first-haiku
+model_api: openai-compatible/claude-haiku-5-5
+model_base_url: https://api.anthropic.com/v1
+install: >-
+  uv venv --python 3.12 /opt/harness/venv
+  && uv pip install --python /opt/harness/venv/bin/python -r {src}/requirements.txt
+serve: /opt/harness/venv/bin/python {src}/serve.py

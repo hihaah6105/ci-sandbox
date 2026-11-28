@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio, json, os, time
 
 import contract as contract_mod
+import document as document_mod
 import gate as gate_mod
 import model as model_mod
 import skeleton as skeleton_mod
@@ -40,6 +41,9 @@ RESERVE_SEC = int(os.environ.get("PLE_RESERVE_SEC", "180"))     # kept for the f
 MAX_STEPS = int(os.environ.get("PLE_MAX_STEPS", "160"))
 GATE_EVERY = int(os.environ.get("PLE_GATE_EVERY", "15"))
 MAX_IDLE = int(os.environ.get("PLE_MAX_IDLE", "3"))   # replies with no tool call
+IDLE_ROUNDS = int(os.environ.get("PLE_IDLE_ROUNDS", "4"))  # how hard to push past that
+DRAFT_BY_STEP = int(os.environ.get("PLE_DRAFT_BY_STEP", "12"))
+PUSH_EVERY = int(os.environ.get("PLE_PUSH_EVERY", "5"))  # re-insist this often
 
 # Formats that are archives underneath: plain text written to one destroys it.
 BINARY_EXT = (".docx", ".doc", ".xlsx", ".xls", ".pptx", ".pdf", ".zip", ".dwg")
@@ -76,10 +80,15 @@ How this harness works, and what it expects of you:
 - Read every format with a tool, not by guessing: `pdftotext -layout` for PDFs,
   python-docx for .docx, openpyxl for .xlsx. What this container actually has is
   listed under "Container" in your working state; check there before assuming.
-- A .docx, .xlsx, .pdf or .zip deliverable must be BUILT by a script (python-docx,
-  openpyxl, zipfile), never written as plain text. `write_file` refuses those
-  formats for that reason. A valid empty file of the right type is already at the
-  deliverable path; overwrite it with the real document.
+- To produce the deliverable, call `write_document` with the whole document as
+  markdown. The harness builds the real .docx, .xlsx or .pdf for you, so do not
+  script python-docx or openpyxl. Markdown pipe tables become real worksheet rows.
+  `write_file` refuses binary formats because text written to them is corrupt.
+- Write a complete draft EARLY, from whatever you know at the time, and improve it
+  afterwards. Every write_document call replaces the whole file, so there is no
+  cost to a first version that is wrong. A document that exists and is partly
+  wrong scores; a perfect document you never wrote scores zero. Reading more is
+  not progress while the deliverable is still empty.
 - If your state lists MCP app servers, the project's live systems (issue tracker,
   wiki, mail, file store) are reachable over HTTP from bash at those URLs. Part of
   the evidence you need - and sometimes part of the deliverable itself, such as
@@ -93,6 +102,43 @@ How this harness works, and what it expects of you:
 - State your uncertainty. Never claim a file exists, or a check passed, without
   having actually produced or run it.
 """
+
+
+def _cut(result):
+    """The protocol flags a truncated result; never let that pass silently."""
+    return "  [EVALUATOR TRUNCATED THIS OUTPUT - you have not seen all of it]" \
+        if isinstance(result, dict) and result.get("truncated") else ""
+
+
+def _pending(findings):
+    """Deliverables that are still the untouched placeholder, or missing outright.
+
+    The interim gate reports a placeholder as WARN, not FAIL - correct, because
+    mid-run a placeholder is expected. But "still a placeholder at step 12" is
+    exactly the condition that needs forcing, so read the findings directly
+    rather than the verdict.
+    """
+    return [p for lvl, p, msg in (findings or [])
+            if "placeholder" in msg.lower() or "does not exist" in msg.lower()
+            or "is empty" in msg.lower()]
+
+
+def _push(con, findings, drafted):
+    """Say exactly which file is missing and exactly how to produce it."""
+    want = ([p for p in _pending(findings) if p not in drafted]
+            or [p for p in (con.get("deliverables") or []) if p not in drafted])
+    bad = [f"- {p}: {msg}" for lvl, p, msg in (findings or [])
+           if lvl == gate_mod.FAIL or "placeholder" in msg.lower()]
+    target = want[0] if want else (con.get("output_dir") or "output/")
+    return (
+        "STOP READING AND WRITE THE DELIVERABLE.\n\n"
+        "The conformance gate is still failing:\n"
+        + ("\n".join(bad) or f"- nothing has been written to {target}") + "\n\n"
+        f"Call write_document with path {target!r} and the complete document as "
+        "markdown, now, using what you already know. An unfinished document scores "
+        "far better than no document, and you can replace it as many times as you "
+        "like - every call overwrites the whole file. Do not read anything else "
+        "until it exists.")
 
 
 async def _exists(session, path):
@@ -218,10 +264,18 @@ async def solve(session) -> str:
     steps = 0
     idle = 0
     last_text = ""
+    drafted = set()
+    nagged = False
+    exit_reason = "steps"
+    # Run 8: the agent read for 23 steps and never wrote the memo. The briefs
+    # themselves ask for an early version ("within your first ~N steps"), which
+    # contract.py already parses, so hold it to that deadline rather than hoping.
+    draft_by = con.get("first_version_by_step") or DRAFT_BY_STEP
     while steps < MAX_STEPS:
         left = session.time_left()
         if left is not None and left < RESERVE_SEC:
             st.add_note("stopping work to leave time for the final gate")
+            exit_reason = "time"
             break
         steps += 1
         try:
@@ -232,6 +286,7 @@ async def solve(session) -> str:
         except model_mod.ModelError as e:
             st.add_note(f"model error, stopping: {e}")
             _dbg(f"step {steps}: MODEL ERROR, stopping -> {e}")
+            exit_reason = f"model_error: {str(e)[:120]}"
             break
         _dbg(f"step {steps}: meta={reply.get('meta')} usage={reply['usage']} "
              f"calls={[c['name'] for c in reply['tool_calls']]} "
@@ -248,11 +303,23 @@ async def solve(session) -> str:
 
         if not reply["tool_calls"]:
             idle += 1
-            if idle >= MAX_IDLE:
-                st.add_note(f"model produced no tool call {idle} times in a row; stopping")
-                _dbg(f"step {steps}: {idle} idle replies in a row, stopping")
+            verdict, findings = await _gate(session, con, created, final=False, workdir=workdir)
+            if verdict != gate_mod.FAIL and not _pending(findings):
+                if idle >= MAX_IDLE:
+                    st.add_note(f"model produced no tool call {idle} times in a row; stopping")
+                    _dbg(f"step {steps}: {idle} idle replies, gate not failing, stopping")
+                    exit_reason = "idle"
+                    break
+                conv.add("user", "Keep going, or call done - the gate passes.")
+                continue
+            # Run 8 ended here with 57 of 60 minutes unspent. An idle reply while
+            # the gate is failing is not a reason to stop; it is a reason to say
+            # exactly what is missing and insist.
+            if idle >= MAX_IDLE * IDLE_ROUNDS:
+                st.add_note(f"model idled {idle} times with the gate still failing; stopping")
+                exit_reason = "idle_despite_failing_gate"
                 break
-            conv.add("user", "Keep going, or call done once the gate passes.")
+            conv.add("user", _push(con, findings, drafted))
             continue
         idle = 0
 
@@ -262,7 +329,8 @@ async def solve(session) -> str:
             out = ""
             if name == "bash":
                 r = await session.exec(str(args.get("command", "")), timeout_sec=300)
-                out = f"exit={r.get('exit_code')}\n{state_mod.clip(r.get('output'))}"
+                out = (f"exit={r.get('exit_code')}{_cut(r)}\n"
+                       + state_mod.clip(r.get("output")))
             elif name == "read_file":
                 p = contract_mod.resolve(str(args.get("path", "")), workdir)
                 b = await _read(session, p)
@@ -282,6 +350,45 @@ async def solve(session) -> str:
                         out = f"wrote {n} bytes to {p}"
                     except Exception as e:
                         out = f"write failed: {e}"
+            elif name == "write_document":
+                p = contract_mod.resolve(str(args.get("path", "")), workdir)
+                md = str(args.get("markdown", ""))
+                blob, why = document_mod.build(p, md)
+                if blob is None:
+                    out = f"REFUSED: {why}"
+                elif len(md.strip()) < 200:
+                    out = (f"REFUSED: {len(md.strip())} characters is not a deliverable. "
+                           "Write the complete document in one call - every section the "
+                           "brief asks for, with the numbers and the sources you recorded.")
+                else:
+                    try:
+                        parent = p.rsplit("/", 1)[0]
+                        if parent:
+                            await session.exec(f'mkdir -p {json.dumps(parent)}', timeout_sec=30)
+                        n = await session.write_file(p, blob)
+                        drafted.add(p)
+                        st.add_check(f"document written at {p}", f"{n} bytes")
+                        out = (f"wrote {n} bytes to {p} from {len(md)} characters of markdown. "
+                               "The placeholder is gone. Check it reads correctly, then "
+                               "improve it; call write_document again to replace it.")
+                    except Exception as e:
+                        out = f"write failed: {e}"
+            elif name == "http":
+                url = str(args.get("url", ""))
+                try:
+                    r = await session.http(
+                        url, method=str(args.get("method") or "GET").upper(),
+                        headers={"content-type": str(args.get("content_type")
+                                                     or "application/json")},
+                        body=str(args.get("body") or "").encode(),
+                        timeout_sec=60)
+                    raw = r.get("body") or b""
+                    text = (raw.decode("utf8", "replace")
+                            if isinstance(raw, (bytes, bytearray)) else str(raw))
+                    out = f"status={r.get('status')}{_cut(r)}\n" + state_mod.clip(text)
+                except Exception as e:
+                    out = (f"http failed: {e}. Only the app servers listed in your state "
+                           "are reachable.")
             elif name == "record":
                 out = _record(st, args)
             elif name == "done":
@@ -293,6 +400,7 @@ async def solve(session) -> str:
                 else:
                     last_text = str(args.get("summary") or last_text)
                     finished = True
+                    exit_reason = "done"
                     out = "accepted"
             else:
                 out = f"unknown tool {name}"
@@ -301,7 +409,15 @@ async def solve(session) -> str:
         if finished:
             break
 
-        if steps % GATE_EVERY == 0:
+        # The draft deadline. Reading is not progress if nothing is ever written.
+        if not drafted and steps >= draft_by and (steps - draft_by) % PUSH_EVERY == 0:
+            verdict, findings = await _gate(session, con, created, final=False, workdir=workdir)
+            if verdict == gate_mod.FAIL or _pending(findings):
+                conv.add("user", _push(con, findings, drafted))
+                if not nagged:
+                    st.add_note(f"draft deadline passed at step {steps} with nothing written")
+                    nagged = True
+        elif steps % GATE_EVERY == 0:
             verdict, findings = await _gate(session, con, created, final=False, workdir=workdir)
             st.add_check(f"interim gate at step {steps}", verdict)
             conv.add("user", gate_mod.report(verdict, findings))
@@ -309,7 +425,8 @@ async def solve(session) -> str:
     # ---- stage 3/4: final gate and an honest final message ---------------
     verdict, findings = await _gate(session, con, created, final=True, workdir=workdir)
     stats = conv.stats()
-    stats.update(steps=steps, seconds=int(time.monotonic() - t0))
+    stats.update(steps=steps, seconds=int(time.monotonic() - t0),
+                 exit_reason=exit_reason, documents_written=sorted(drafted))
     await session.log("state stats: " + json.dumps(stats))
     _dbg(f"final gate: {verdict}\n{gate_mod.report(verdict, findings)}")
     _dbg("stats: " + json.dumps(stats))

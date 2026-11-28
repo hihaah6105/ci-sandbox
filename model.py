@@ -75,7 +75,14 @@ class Client:
             if not base.endswith("/chat/completions"):
                 base = base + ("" if base.endswith(("/v1", "/openai")) else "/v1") + "/chat/completions"
             self.url = base
-            key = (os.environ.get("MODEL_API_KEY") or os.environ.get("GEMINI_API_KEY", ""))
+            # Both keys can be present at once (the workflow passes an AI Studio
+            # key and an Anthropic key), so pick by endpoint, never by priority.
+            if "api.anthropic.com" in base:
+                key = (os.environ.get("ANTHROPIC_API_KEY")
+                       or os.environ.get("MODEL_API_KEY", ""))
+            else:
+                key = (os.environ.get("MODEL_API_KEY")
+                       or os.environ.get("GEMINI_API_KEY", ""))
             self.headers = {"content-type": "application/json",
                             "authorization": f"Bearer {key}"}
 
@@ -139,6 +146,25 @@ TOOLS = [
      "schema": {"type": "object", "properties": {
          "path": {"type": "string"}, "content": {"type": "string"}},
          "required": ["path", "content"]}},
+    {"name": "write_document", "description":
+        "Write the actual deliverable. Give the whole document as markdown and the "
+        "harness builds the real .docx, .xlsx, .pdf, .md or .txt at that path. Use "
+        "this instead of scripting python-docx or openpyxl. Markdown pipe tables "
+        "become real worksheet rows in an .xlsx, one sheet per table. Write the "
+        "complete document, not a fragment - every call replaces the whole file.",
+     "schema": {"type": "object", "properties": {
+         "path": {"type": "string", "description": "the deliverable path from your contract"},
+         "markdown": {"type": "string", "description": "the entire document"}},
+         "required": ["path", "markdown"]}},
+    {"name": "http", "description":
+        "Call one of the task's app servers (issue tracker, wiki, mail, file store) "
+        "listed under app server in your working state. Use it to read project data "
+        "that is not in the files, and to make changes the brief asks for, such as "
+        "raising a tracker item - app state is part of the graded deliverable.",
+     "schema": {"type": "object", "properties": {
+         "url": {"type": "string"}, "method": {"type": "string"},
+         "body": {"type": "string"}, "content_type": {"type": "string"}},
+         "required": ["url"]}},
     {"name": "record", "description":
         "Record evidence, a constraint, a decision or a check in the working state. "
         "Constraints are frozen once recorded: to change a design, change a decision, "
